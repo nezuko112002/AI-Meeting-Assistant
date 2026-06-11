@@ -5,12 +5,30 @@ import { SuggestionCard } from './SuggestionCard'
 import { MicButton } from './MicButton'
 import { SpeakerMapEditor } from './SpeakerMapEditor'
 
-const CLIENT_TURN_DEBOUNCE_MS = 2500
+function mergeConsecutiveUtterances(existing = [], incoming = []) {
+  const merged = existing.map(utterance => ({ ...utterance }))
+
+  for (const utterance of incoming) {
+    const text = utterance?.text?.trim()
+    if (!utterance || !text) continue
+
+    const last = merged[merged.length - 1]
+    if (last?.speaker === utterance.speaker) {
+      last.text = `${last.text} ${text}`.replace(/\s+/g, ' ').trim()
+      last.end = utterance.end ?? last.end
+    } else {
+      merged.push({ ...utterance, text })
+    }
+  }
+
+  return merged
+}
 
 export function CopilotModal() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [turns, setTurns]               = useState([])
   const [history, setHistory]           = useState([])
+  const [pendingCoachingUtterances, setPendingCoachingUtterances] = useState([])
   const [speakers, setSpeakers]         = useState([])
   const [speakerMap, setSpeakerMap]     = useState({})
   const [showSpeakerEditor, setShowSpeakerEditor] = useState(false)
@@ -26,16 +44,11 @@ export function CopilotModal() {
   const [error, setError]               = useState(null)
   const [status, setStatus]             = useState('')
   const scrollRef = useRef(null)
-  const pendingClientTurnRef = useRef(null)
-  const pendingClientTimerRef = useRef(null)
+  const meetingUtterancesRef = useRef([])
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [turns, status])
-
-  useEffect(() => () => {
-    if (pendingClientTimerRef.current) clearTimeout(pendingClientTimerRef.current)
-  }, [])
 
   // ── Audio / AI logic ──────────────────────────────────────────────────────
   const formatTranscriptText = useCallback((utterances) => {
@@ -44,46 +57,76 @@ export function CopilotModal() {
       .join('\n')
   }, [speakerMap])
 
-  const addTranscriptOnlyTurn = useCallback((utterances) => {
-    const newSpeakers = [...new Set(utterances.map(u => u.speaker))]
+  const getSpeakerLabel = useCallback((speaker) => {
+    return speakerMap[speaker] || getDefaultSpeakerLabel(speaker)
+  }, [speakerMap])
+
+  const isClientUtterance = useCallback((utterance) => {
+    const label = getSpeakerLabel(utterance?.speaker).trim().toLowerCase()
+    if (utterance?.speaker === 'Boss' || label === 'boss') return false
+    return utterance?.speaker === 'Client' || label === 'client' || Boolean(utterance?.speaker)
+  }, [getSpeakerLabel])
+
+  const addTranscriptOnlyTurn = useCallback((utterances, { queueForCoaching = true } = {}) => {
+    const mergedUtterances = mergeConsecutiveUtterances([], utterances)
+    if (mergedUtterances.length === 0) return
+
+    const newSpeakers = [...new Set(mergedUtterances.map(u => u.speaker))]
     setSpeakers(prev => {
       const merged = [...new Set([...prev, ...newSpeakers])]
       if (merged.length !== prev.length) setShowSpeakerEditor(true)
       return merged
     })
 
-    setTurns(prev => [...prev, { id: Date.now(), utterances, suggestion: '', isStreaming: false }])
-    setHistory(prev => [...prev, { role: 'user', content: formatTranscriptText(utterances) }])
-  }, [formatTranscriptText])
+    meetingUtterancesRef.current = mergeConsecutiveUtterances(meetingUtterancesRef.current, mergedUtterances)
+    setTurns(prev => {
+      const lastTurn = prev[prev.length - 1]
+      const lastUtterance = lastTurn?.utterances?.[lastTurn.utterances.length - 1]
+      const firstIncoming = mergedUtterances[0]
 
-  const processUtterances = useCallback(async (utterances, { showStatus = false } = {}) => {
+      if (lastTurn && !lastTurn.suggestion && !lastTurn.isStreaming && lastUtterance?.speaker === firstIncoming?.speaker) {
+        return prev.map((turn, index) =>
+          index === prev.length - 1
+            ? { ...turn, utterances: mergeConsecutiveUtterances(turn.utterances, mergedUtterances) }
+            : turn
+        )
+      }
+
+      return [...prev, { id: Date.now(), utterances: mergedUtterances, suggestion: '', isStreaming: false }]
+    })
+    setHistory(prev => [...prev, { role: 'user', content: formatTranscriptText(mergedUtterances) }])
+    if (queueForCoaching) {
+      const clientUtterances = mergedUtterances.filter(isClientUtterance)
+      if (clientUtterances.length > 0) {
+        setPendingCoachingUtterances(prev => mergeConsecutiveUtterances(prev, clientUtterances))
+      }
+    }
+  }, [formatTranscriptText, isClientUtterance])
+
+  const generateCoaching = useCallback(async (utterances = pendingCoachingUtterances) => {
     if (!utterances || utterances.length === 0) return
 
-    const hasClientSpeech = utterances.some(u => u.speaker === 'Client')
+    const hasClientSpeech = utterances.some(isClientUtterance)
     if (!hasClientSpeech) {
-      addTranscriptOnlyTurn(utterances)
+      setError('No client speech is ready to coach yet.')
       return
     }
 
     setIsProcessing(true)
     setError(null)
-    setStatus(showStatus ? 'Generating suggestions...' : '')
-
-    const newSpeakers = [...new Set(utterances.map(u => u.speaker))]
-    setSpeakers(prev => {
-      const merged = [...new Set([...prev, ...newSpeakers])]
-      if (merged.length !== prev.length) setShowSpeakerEditor(true)
-      return merged
-    })
+    setStatus('Generating suggestions...')
 
     const turnId = Date.now()
-    setTurns(prev => [...prev, { id: turnId, utterances, suggestion: '', isStreaming: true }])
+    const meetingTranscriptFromStart = meetingUtterancesRef.current.length > 0
+      ? meetingUtterancesRef.current
+      : utterances
+    setTurns(prev => [...prev, { id: turnId, utterances: [], suggestion: '', isStreaming: true }])
 
     try {
       const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ utterances, history, speakerMap, missionBrief }),
+        body: JSON.stringify({ utterances, meetingTranscriptFromStart, history, speakerMap, missionBrief }),
       })
 
       if (!analyzeRes.ok) {
@@ -113,6 +156,7 @@ export function CopilotModal() {
               { role: 'user', content: transcriptText },
               { role: 'assistant', content: accumulated },
             ])
+            setPendingCoachingUtterances([])
             setIsProcessing(false); setStatus(''); return
           }
           try {
@@ -130,7 +174,7 @@ export function CopilotModal() {
       setError(err.message)
       setIsProcessing(false); setStatus('')
     }
-  }, [addTranscriptOnlyTurn, formatTranscriptText, history, missionBrief, speakerMap])
+  }, [formatTranscriptText, history, isClientUtterance, missionBrief, pendingCoachingUtterances, speakerMap])
 
   const splitSpeakersIfNeeded = useCallback(async (utterances) => {
     if (!utterances || utterances.length !== 1) return utterances
@@ -156,42 +200,10 @@ export function CopilotModal() {
     }
   }, [])
 
-  const flushPendingClientTurn = useCallback(async () => {
-    const utterances = pendingClientTurnRef.current
-    pendingClientTurnRef.current = null
-    pendingClientTimerRef.current = null
-    if (!utterances) return
-
-    const speakerSplitUtterances = await splitSpeakersIfNeeded(utterances)
-    processUtterances(speakerSplitUtterances)
-  }, [processUtterances, splitSpeakersIfNeeded])
-
-  const queueClientTurn = useCallback((utterances) => {
-    pendingClientTurnRef.current = [
-      ...(pendingClientTurnRef.current || []),
-      ...utterances,
-    ]
-
-    if (pendingClientTimerRef.current) clearTimeout(pendingClientTimerRef.current)
-    pendingClientTimerRef.current = setTimeout(flushPendingClientTurn, CLIENT_TURN_DEBOUNCE_MS)
-  }, [flushPendingClientTurn])
-
   const handleLiveTurn = useCallback(async (utterances) => {
-    const hasClientSpeech = utterances.some(u => u.speaker === 'Client')
-
-    if (hasClientSpeech) {
-      queueClientTurn(utterances)
-      return
-    }
-
-    if (pendingClientTimerRef.current) {
-      clearTimeout(pendingClientTimerRef.current)
-      await flushPendingClientTurn()
-    }
-
     const speakerSplitUtterances = await splitSpeakersIfNeeded(utterances)
-    processUtterances(speakerSplitUtterances)
-  }, [flushPendingClientTurn, processUtterances, queueClientTurn, splitSpeakersIfNeeded])
+    addTranscriptOnlyTurn(speakerSplitUtterances)
+  }, [addTranscriptOnlyTurn, splitSpeakersIfNeeded])
 
   const { isRecording, volume, error: micError, partialTranscript, setupStatus, start, stop } = useStreamingTranscription({
     onTurn: handleLiveTurn,
@@ -202,8 +214,8 @@ export function CopilotModal() {
   }, [])
 
   const processManual = useCallback(async (text) => {
-    processUtterances([{ speaker: 'A', text }], { showStatus: true })
-  }, [processUtterances])
+    addTranscriptOnlyTurn([{ speaker: 'Client', text }])
+  }, [addTranscriptOnlyTurn])
 
   const activeError = error || micError
 
@@ -233,7 +245,7 @@ export function CopilotModal() {
             )}
             {turns.length > 0 && (
               <button
-                onClick={() => { setTurns([]); setHistory([]); setSpeakers([]); setSpeakerMap({}); setError(null) }}
+                onClick={() => { meetingUtterancesRef.current = []; setPendingCoachingUtterances([]); setTurns([]); setHistory([]); setSpeakers([]); setSpeakerMap({}); setError(null) }}
                 className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded transition-colors"
               >
                 Clear
@@ -413,17 +425,29 @@ export function CopilotModal() {
             {/* Footer */}
             <div className="flex-shrink-0 px-4 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="text-xs text-slate-400">
-                {speakers.length > 0
+                {pendingCoachingUtterances.length > 0
+                  ? `${pendingCoachingUtterances.length} client part${pendingCoachingUtterances.length !== 1 ? 's' : ''} ready`
+                  : speakers.length > 0
                   ? `${speakers.length} speaker${speakers.length !== 1 ? 's' : ''} · ${turns.length} exchange${turns.length !== 1 ? 's' : ''}`
                   : 'Powered by AssemblyAI + GPT-4o'
                 }
               </div>
-              <MicButton
-                isRecording={isRecording}
-                isProcessing={isProcessing}
-                volume={volume}
-                onClick={isRecording ? stop : start}
-              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => generateCoaching()}
+                  disabled={isProcessing || pendingCoachingUtterances.length === 0}
+                  className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-full disabled:opacity-40 disabled:cursor-not-allowed hover:bg-emerald-500 transition-colors"
+                  title="Generate what to say next from the client speech so far"
+                >
+                  Generate
+                </button>
+                <MicButton
+                  isRecording={isRecording}
+                  isProcessing={isProcessing}
+                  volume={volume}
+                  onClick={isRecording ? stop : start}
+                />
+              </div>
             </div>
         </>
       </div>

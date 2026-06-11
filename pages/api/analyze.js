@@ -8,6 +8,31 @@ function getSpeakerLabel(speaker, speakerMap) {
   return `Speaker ${speaker}`
 }
 
+function isClientUtterance(utterance, speakerMap) {
+  const label = getSpeakerLabel(utterance?.speaker, speakerMap).trim().toLowerCase()
+  if (utterance?.speaker === 'Boss' || label === 'boss') return false
+  return utterance?.speaker === 'Client' || label === 'client' || Boolean(utterance?.speaker)
+}
+
+function mergeConsecutiveUtterances(utterances = []) {
+  const merged = []
+
+  for (const utterance of utterances) {
+    const text = utterance?.text?.trim()
+    if (!utterance || !text) continue
+
+    const last = merged[merged.length - 1]
+    if (last?.speaker === utterance.speaker) {
+      last.text = `${last.text} ${text}`.replace(/\s+/g, ' ').trim()
+      last.end = utterance.end ?? last.end
+    } else {
+      merged.push({ ...utterance, text })
+    }
+  }
+
+  return merged
+}
+
 function buildMissionBrief(brief) {
   if (!brief) return ''
 
@@ -21,22 +46,41 @@ function buildMissionBrief(brief) {
   return lines.length ? `\n\nMission brief:\n${lines.join('\n')}` : ''
 }
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
-
-  const { utterances, history, speakerMap, missionBrief } = req.body
-  if (!utterances || utterances.length === 0) return res.status(400).json({ error: 'No utterances' })
-  if (!utterances.some(u => u.speaker === 'Client')) {
-    return res.status(204).end()
-  }
-
-  // Build readable transcript from labeled utterances
-  const transcriptText = utterances
+function buildTranscriptText(utterances, speakerMap) {
+  return utterances
     .map(u => {
       const label = getSpeakerLabel(u.speaker, speakerMap)
       return `${label}: "${u.text}"`
     })
     .join('\n')
+}
+
+function buildRecentCoaching(history = []) {
+  const recentSuggestions = history
+    .filter(h => h.role === 'assistant' && h.content)
+    .slice(-3)
+    .map((h, index) => `${index + 1}. ${h.content}`)
+    .join('\n\n')
+
+  return recentSuggestions ? `\n\nRecent coaching already given:\n${recentSuggestions}` : ''
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+
+  const { utterances, meetingTranscriptFromStart, history = [], speakerMap, missionBrief } = req.body
+  if (!utterances || utterances.length === 0) return res.status(400).json({ error: 'No utterances' })
+  if (!utterances.some(u => isClientUtterance(u, speakerMap))) {
+    return res.status(204).end()
+  }
+
+  const latestUtterances = mergeConsecutiveUtterances(utterances)
+  const fullMeetingUtterances = Array.isArray(meetingTranscriptFromStart) && meetingTranscriptFromStart.length > 0
+    ? meetingTranscriptFromStart
+    : latestUtterances
+  const mergedFullMeetingUtterances = mergeConsecutiveUtterances(fullMeetingUtterances)
+  const fullTranscriptText = buildTranscriptText(mergedFullMeetingUtterances, speakerMap)
+  const latestExchangeText = buildTranscriptText(latestUtterances, speakerMap)
 
   const systemPrompt = `You are a silent real-time meeting coach. Your boss is in a virtual meeting with clients, leads, callers, or teammates. You receive labeled transcripts identifying who said what. "Boss" is your boss's microphone. "Client" is the meeting/tab audio from the other side of the call.
 
@@ -60,10 +104,14 @@ Keep everything concise and ready to speak. Avoid long explanations, recaps, and
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...history.map(h => ({ role: h.role, content: h.content })),
     {
       role: 'user',
-      content: `Latest exchange:\n${transcriptText}\n\nCoach my boss on what to say next. Prioritize spoken response over summary.`
+      content: `Meeting transcript from the beginning until now:\n${fullTranscriptText}
+
+Latest exchange that needs a reply now:
+${latestExchangeText}${buildRecentCoaching(history)}
+
+Coach my boss on what to say next. Base the answer on the meeting conversation from the beginning, including earlier details, names, decisions, pain points, and commitments. Use the latest exchange as the immediate thing to respond to, but do not ignore the earlier conversation. Prioritize a spoken response over summary.`
     }
   ]
 
