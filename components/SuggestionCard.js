@@ -17,7 +17,7 @@ function parseSections(text) {
   if (sections.length === 0 && normalizedText.trim()) {
     sections.push({ heading: 'Say this next', content: normalizedText.trim() })
   }
-  return sections
+  return sections.filter(s => s.heading.toLowerCase() !== 'why it works')
 }
 
 export function SuggestionCard({ text, isStreaming }) {
