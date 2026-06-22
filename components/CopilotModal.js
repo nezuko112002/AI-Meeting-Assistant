@@ -34,7 +34,6 @@ export function CopilotModal() {
   const [showSpeakerEditor, setShowSpeakerEditor] = useState(false)
   const [showMissionBrief, setShowMissionBrief] = useState(true)
   const [missionBrief, setMissionBrief] = useState({
-    clientName: '',
     company: '',
     meetingAbout: '',
     background: '',
@@ -295,22 +294,13 @@ export function CopilotModal() {
                     Hide
                   </button>
                 </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <input
-                    type="text"
-                    value={missionBrief.clientName}
-                    onChange={e => setMissionBrief(prev => ({ ...prev, clientName: e.target.value }))}
-                    placeholder="Client contact name"
-                    className="text-xs border border-slate-200 rounded-lg px-2 py-2 outline-none focus:border-slate-400 bg-white"
-                  />
-                  <input
-                    type="text"
-                    value={missionBrief.company}
-                    onChange={e => setMissionBrief(prev => ({ ...prev, company: e.target.value }))}
-                    placeholder="Client company"
-                    className="text-xs border border-slate-200 rounded-lg px-2 py-2 outline-none focus:border-slate-400 bg-white"
-                  />
-                </div>
+                <input
+                  type="text"
+                  value={missionBrief.company}
+                  onChange={e => setMissionBrief(prev => ({ ...prev, company: e.target.value }))}
+                  placeholder="Client company"
+                  className="w-full text-xs border border-slate-200 rounded-lg px-2 py-2 outline-none focus:border-slate-400 bg-white"
+                />
                 <input
                   type="text"
                   value={missionBrief.meetingAbout}

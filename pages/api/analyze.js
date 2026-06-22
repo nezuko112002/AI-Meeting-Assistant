@@ -42,8 +42,7 @@ function buildMissionBrief(brief) {
   if (!brief) return ''
 
   const lines = [
-    brief.clientName && `Client name: ${brief.clientName}`,
-    brief.company && `Company: ${brief.company}`,
+    brief.company && `Client company (prospect — Boss does NOT work here): ${brief.company}`,
     brief.meetingAbout && `Meeting about: ${brief.meetingAbout}`,
     brief.background && `Background: ${brief.background}`,
     brief.approvedPricing && `Approved pricing to mention: ${brief.approvedPricing}`,
