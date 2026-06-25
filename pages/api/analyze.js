@@ -4,6 +4,8 @@ import {
   detectClientIntent,
   sanitizeCoachingResponse,
 } from '../../lib/sanitizeCoaching'
+import { buildSystemPrompt, getKnowledgeContextForSanitize } from '../../lib/buildAnalyzePrompt'
+import { findRelevantProjects, getKnowledgeCompanyNames, getAllowedSheetPrices } from '../../lib/knowledgeHelpers'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -38,19 +40,6 @@ function mergeConsecutiveUtterances(utterances = []) {
   return merged
 }
 
-function buildMissionBrief(brief) {
-  if (!brief) return ''
-
-  const lines = [
-    brief.company && `Client company (prospect — Boss does NOT work here): ${brief.company}`,
-    brief.meetingAbout && `Meeting about: ${brief.meetingAbout}`,
-    brief.background && `Background: ${brief.background}`,
-    brief.approvedPricing && `Approved pricing to mention: ${brief.approvedPricing}`,
-  ].filter(Boolean)
-
-  return lines.length ? `\n\nMission brief:\n${lines.join('\n')}` : ''
-}
-
 function buildTranscriptText(utterances, speakerMap) {
   return utterances
     .map(u => {
@@ -63,35 +52,73 @@ function buildTranscriptText(utterances, speakerMap) {
 function buildRecentCoaching(history = []) {
   const recentSuggestions = history
     .filter(h => h.role === 'assistant' && h.content)
-    .slice(-2)
+    .slice(-3)
     .map((h, index) => `${index + 1}. ${h.content}`)
     .join('\n\n')
 
   if (!recentSuggestions) return ''
 
-  return `\n\nPrior coaching this meeting (do NOT repeat these points, tools, openers, or phrases — advance the thread):\n${recentSuggestions}`
+  const digest = []
+  const priorSay = history
+    .filter(h => h.role === 'assistant')
+    .map(h => h.content || '')
+    .join(' ')
+
+  if (/\bphase one is \$[\d,]+/i.test(priorSay)) {
+    digest.push('- Phase-one price already stated — do not repeat unless client asked price again.')
+  }
+  if (/\b(mid-august|weekly demos?)\b/i.test(priorSay)) {
+    digest.push('- Deadline/demo pitch already stated — do not repeat on trust or process turns.')
+  }
+  if (/\bwhat specific features\b/i.test(priorSay)) {
+    digest.push('- Portal feature question already asked — ask something new.')
+  }
+
+  const digestBlock = digest.length ? `\nAlready covered (do NOT repeat):\n${digest.join('\n')}` : ''
+
+  return `\n\nPrior coaching this meeting (advance the thread — new facts only, no recycled sentences):${digestBlock}\n${recentSuggestions}`
 }
 
-function buildGoodOpenerExamples() {
-  return `
-Good "Say this next" openers (use patterns like these):
-- "The platform we'd build has five parts: ..."
-- "Yes — here's how we'd handle pricing: ..."
-- "For visibility across every survey, we'd add a live job board that ..."
-- "HubSpot, DroneDeploy, and QuickBooks would connect through ..."
+function extractClientStatedPrices(fullTranscriptText = '') {
+  return [...(fullTranscriptText.match(/\$[\d,]+(?:\s*(?:to|-|–)\s*\$[\d,]+)?/gi) || [])]
+}
 
-Bad openers (NEVER use):
-- "To enhance your reporting capabilities, we recommend..."
-- "To address your scaling issues, we recommend..."
-- "We can create a unified platform that..."
-- "We recommend implementing..."
-`
+function collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptText, clientIntent = {}, history = []) {
+  const relevant = findRelevantProjects(knowledge, contextText, brief)
+  const allowedNames = getKnowledgeContextForSanitize(knowledge)
+  const sheetPrices = getAllowedSheetPrices(knowledge, relevant, `${contextText}\n${fullTranscriptText}`)
+  const clientStatedPrices = extractClientStatedPrices(fullTranscriptText)
+
+  return {
+    allowPricing: Boolean(clientIntent.askingPrice || clientIntent.clientStatedBudget),
+    allowPriceRepeat: Boolean(clientIntent.askingPrice),
+    allowDeadlineRepeat: Boolean(clientIntent.askingDeadline && !clientIntent.alreadyStatedDeadlinePitch),
+    askingTrust: Boolean(clientIntent.askingTrust),
+    alreadyStatedDeadlinePitch: Boolean(clientIntent.alreadyStatedDeadlinePitch),
+    alreadyStatedAccountLead: Boolean(clientIntent.alreadyStatedAccountLead),
+    allowedNames,
+    fallbackNames: getKnowledgeCompanyNames(relevant),
+    clientCompany: brief?.clientCompany || '',
+    documentedPrices: sheetPrices,
+    clientStatedPrices,
+    history,
+    meetingContext: contextText,
+  }
 }
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const { utterances, meetingTranscriptFromStart, history = [], speakerMap, missionBrief } = req.body
+  const {
+    utterances,
+    meetingTranscriptFromStart,
+    history = [],
+    speakerMap,
+    knowledge = [],
+    brief,
+    company,
+  } = req.body
+
   if (!utterances || utterances.length === 0) return res.status(400).json({ error: 'No utterances' })
   if (!utterances.some(u => isClientUtterance(u, speakerMap))) {
     return res.status(204).end()
@@ -104,43 +131,16 @@ export default async function handler(req, res) {
   const mergedFullMeetingUtterances = mergeConsecutiveUtterances(fullMeetingUtterances)
   const fullTranscriptText = buildTranscriptText(mergedFullMeetingUtterances, speakerMap)
   const latestExchangeText = buildTranscriptText(latestUtterances, speakerMap)
-  const clientIntent = detectClientIntent(latestUtterances, speakerMap)
+  const contextText = `${fullTranscriptText}\n${brief?.background || ''}\n${brief?.meetingGoal || ''}`
+
+  const clientIntent = detectClientIntent(latestUtterances, speakerMap, {
+    fullMeetingUtterances: mergedFullMeetingUtterances,
+    history,
+  })
   const intentGuidance = buildIntentGuidance(clientIntent)
-  const allowPricing = Boolean(missionBrief?.approvedPricing)
 
-  const systemPrompt = `You are a silent real-time sales meeting coach for a software and web development agency.
-
-**Who we are:** We build custom software and redesign/develop websites for other companies. We are the vendor; the company on the other side of the call is the client (prospect or buyer). Our job in every meeting is to win their project.
-
-**Who is on the call:** "Boss" is our salesperson (our side). "Client" is the prospect company. Coach Boss on what to say to win the deal.
-
-**One evolving proposal:** This meeting builds ONE solution — a single platform or project scope that grows turn by turn. Read the full transcript, infer what we've already proposed, and EXTEND that thread. Never restart with a unrelated product (don't jump from Tableau to Asana to a brand-new app). Each answer adds the next layer: pain → module → integration → visibility → pricing path.
-
-Two core objectives — every response must satisfy both:
-
-1. **Expertise:** Name real tools, stacks, and architectures for their use case. Tie every point to what the client said in THIS meeting.
-
-2. **Persuasion:** Move toward a signed SOW. Propose phases, reduce risk, ask one sharp closing question.
-
-${buildGoodOpenerExamples()}
-
-Writing rules — strict:
-- **Say this next** opens with the direct answer — a noun phrase, "Yes —", "The platform includes...", or a specific capability. Never start with "To [verb]..." or "We can/recommend/suggest...".
-- No validation fillers: "Absolutely", "Great question", "That makes sense".
-- No generic recap of the whole meeting unless the client explicitly asks for the full system.
-- **Conversation continuity:** Respond only to what's NEW in the latest client message. If Boss already said something similar, go deeper or move to the next step — don't repeat.
-- **Pricing:** Never state dollar amounts, ranges, or monthly fees unless the mission brief includes approved pricing. When asked for numbers, outline scope and promise a written estimate — do not guess.
-- Mention "discovery phase" at most once per meeting.
-
-Provide your response in these clearly labeled sections only:
-
-**Say this next:** [2-4 natural sentences Boss can say out loud. Direct opener. One unified solution thread.]
-
-**Quick context:** [Only if Boss may not know a term — otherwise omit this section entirely.]
-
-**Follow-up:** [One concrete question that advances the deal — not "schedule a follow-up" unless pricing/contract is next.]
-
-No "Why it works" section.${buildMissionBrief(missionBrief)}`
+  const systemPrompt = buildSystemPrompt({ company, brief, knowledge, contextText })
+  const sanitizeOptions = collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptText, clientIntent, history)
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -150,8 +150,8 @@ No "Why it works" section.${buildMissionBrief(missionBrief)}`
 
 Latest exchange since last coaching (Boss + Client):\n${latestExchangeText}${buildRecentCoaching(history)}${intentGuidance}
 
-Coach Boss on what to say next. One unified proposal — extend what was already discussed. Direct opener only. Answer the client's newest question first.`
-    }
+Coach Boss on what to say next. Answer ONLY what is NEW in the client's latest message. If price was already stated in prior coaching, do not repeat it unless they asked price again. If client asked for price for the first time, state spreadsheet-backed dollar amounts. One unified proposal — extend what was already discussed. Direct opener only. Two sections only: Say this next and Follow-up.`,
+    },
   ]
 
   try {
@@ -162,8 +162,8 @@ Coach Boss on what to say next. One unified proposal — extend what was already
     const stream = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages,
-      max_tokens: 380,
-      temperature: 0.25,
+      max_tokens: 420,
+      temperature: 0.2,
       stream: true,
     })
 
@@ -177,7 +177,7 @@ Coach Boss on what to say next. One unified proposal — extend what was already
       }
     }
 
-    const sanitized = sanitizeCoachingResponse(accumulated, { allowPricing })
+    const sanitized = sanitizeCoachingResponse(accumulated, sanitizeOptions)
     if (sanitized !== accumulated) {
       res.write(`data: ${JSON.stringify({ replace: sanitized })}\n\n`)
     }
