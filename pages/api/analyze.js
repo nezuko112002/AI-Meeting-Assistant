@@ -5,7 +5,13 @@ import {
   sanitizeCoachingResponse,
 } from '../../lib/sanitizeCoaching'
 import { buildSystemPrompt, getKnowledgeContextForSanitize } from '../../lib/buildAnalyzePrompt'
-import { findRelevantProjects, getKnowledgeCompanyNames, getAllowedSheetPrices } from '../../lib/knowledgeHelpers'
+import {
+  extractCitedClientNames,
+  findRelevantProjects,
+  getKnowledgeCompanyNames,
+  getAllowedSheetPrices,
+  pickPortfolioProjects,
+} from '../../lib/knowledgeHelpers'
 import { fetchWebsiteSnippet } from '../../lib/fetchWebsiteSnippet'
 import { buildProspectFactContext } from '../../lib/prospectAttribution'
 
@@ -53,7 +59,23 @@ function buildTranscriptText(utterances, speakerMap) {
     .join('\n')
 }
 
-function buildRecentCoaching(history = []) {
+function clientAskedDistinctQuestion(intent = {}) {
+  return Boolean(
+    intent.askingIndustryExperience
+    || intent.askingCredibility
+    || intent.askingPortfolioNames
+    || intent.askingPortfolioDetails
+    || intent.askingWhatYouKnow
+    || intent.askingPrice
+    || intent.askingOwnership
+    || intent.askingTrust
+    || intent.askingProcess
+    || intent.askingDeadline
+    || intent.portfolioObjection
+  )
+}
+
+function buildRecentCoaching(history = [], clientIntent = {}) {
   const recentSuggestions = history
     .filter(h => h.role === 'assistant' && h.content)
     .slice(-3)
@@ -67,15 +89,16 @@ function buildRecentCoaching(history = []) {
     .filter(h => h.role === 'assistant')
     .map(h => h.content || '')
     .join(' ')
+  const skipAntiRepeatDigests = clientAskedDistinctQuestion(clientIntent)
 
-  if (/\bphase one is \$[\d,]+/i.test(priorSay)) {
+  if (!skipAntiRepeatDigests && /\bphase one is \$[\d,]+/i.test(priorSay)) {
     digest.push('- Phase-one price already stated — do not repeat unless client asked price again.')
   }
-  if (/\b(mid-august|weekly demos?)\b/i.test(priorSay)) {
+  if (!skipAntiRepeatDigests && /\b(mid-august|weekly demos?)\b/i.test(priorSay)) {
     digest.push('- Deadline/demo pitch already stated — do not repeat on trust or process turns.')
   }
-  if (/\bwhat specific features\b/i.test(priorSay)) {
-    digest.push('- Portal feature question already asked — ask something new.')
+  if (!skipAntiRepeatDigests && /\bwhat specific features\b/i.test(priorSay)) {
+    digest.push('- Feature-priority question already asked — ask something new next turn.')
   }
   digest.push('- Portfolio names are past clients we built for — never the prospect\'s systems.')
 
@@ -91,6 +114,23 @@ function extractClientStatedPrices(fullTranscriptText = '') {
 function collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptText, clientIntent = {}, history = []) {
   const relevant = findRelevantProjects(knowledge, contextText, brief)
   const allowedNames = getKnowledgeContextForSanitize(knowledge)
+  const priorCoachingText = history
+    .filter(h => h.role === 'assistant')
+    .map(h => h.content || '')
+    .join('\n')
+  const priorCited = extractCitedClientNames(priorCoachingText, allowedNames)
+  const truckingTurn = clientIntent.askingIndustryExperience
+    || clientIntent.askingPortfolioNames
+    || clientIntent.askingPortfolioDetails
+    || (clientIntent.askingCredibility && clientIntent.logisticsContext)
+  const portfolioProjects = truckingTurn
+    ? pickPortfolioProjects(knowledge, {
+      limit: clientIntent.askingPortfolioNames ? 3 : 2,
+      excludeNames: clientIntent.askingPortfolioNames ? priorCited : [],
+      truckingOnly: true,
+      citedNames: clientIntent.askingPortfolioDetails ? priorCited : [],
+    })
+    : relevant
   const sheetPrices = getAllowedSheetPrices(knowledge, relevant, `${contextText}\n${fullTranscriptText}`)
   const clientStatedPrices = extractClientStatedPrices(fullTranscriptText)
   const factContext = buildProspectFactContext(fullTranscriptText, brief)
@@ -105,13 +145,17 @@ function collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptTex
     allowedNames,
     portfolioNames: allowedNames,
     factContext,
-    fallbackNames: getKnowledgeCompanyNames(relevant),
+    fallbackNames: getKnowledgeCompanyNames(portfolioProjects),
+    portfolioProjects,
     clientCompany: brief?.clientCompany || '',
     clientRejectedTmsReplacement: Boolean(clientIntent.clientRejectedTmsReplacement),
     documentedPrices: sheetPrices,
     clientStatedPrices,
     history,
     meetingContext: contextText,
+    intent: clientIntent,
+    websiteSnippet: brief?.websiteSnippet || '',
+    priorConversations: brief?.priorConversations || '',
   }
 }
 
@@ -169,9 +213,9 @@ export default async function handler(req, res) {
       role: 'user',
       content: `Full meeting transcript:\n${fullTranscriptText}
 
-Latest exchange since last coaching (You + Client):\n${latestExchangeText}${buildRecentCoaching(history)}${intentGuidance}
+Latest exchange since last coaching (You + Client):\n${latestExchangeText}${buildRecentCoaching(history, clientIntent)}${intentGuidance}
 
-Coach the salesperson (You) on what to say next. NEVER attribute spreadsheet portfolio names as the prospect's systems or needs unless the client said them in the transcript or brief. Answer ONLY what is NEW in the client's latest message. Two sections only: Say this next and Follow-up.`,
+Coach the salesperson (You) on what to say next. Cite spreadsheet clients as past work we delivered when asked about experience. Never describe portfolio names as the prospect's systems unless they said so in the transcript or brief. Never refuse with "I can't provide details". Answer ONLY what is NEW in the client's latest message. Two sections only: Say this next and Follow-up.`,
     },
   ]
 

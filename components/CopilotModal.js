@@ -223,6 +223,8 @@ export function CopilotModal() {
   }, [company, fetchKnowledge, isRecording, start, stop])
 
   const generateCoaching = useCallback(async (utterancesOverride) => {
+    if (isProcessing) return
+
     const clientPartial = partialTranscript.filter(isClientUtterance)
     const sinceLastCoach = meetingUtterancesRef.current.slice(lastCoachedIndexRef.current)
     const utterances = utterancesOverride ?? mergeConsecutiveUtterances(
@@ -241,7 +243,19 @@ export function CopilotModal() {
     const turnId = Date.now()
     const fullContext = mergeConsecutiveUtterances(meetingUtterancesRef.current, partialTranscript)
     const meetingTranscriptFromStart = fullContext.length > 0 ? fullContext : utterances
-    setTurns(prev => [...prev, { id: turnId, utterances: [], suggestion: '', isStreaming: true }])
+
+    let coachingTurnId = turnId
+    setTurns(prev => {
+      const lastIdx = prev.length - 1
+      const last = prev[lastIdx]
+      if (last && !last.suggestion && !last.isStreaming && last.utterances?.length > 0) {
+        coachingTurnId = last.id
+        return prev.map((turn, index) =>
+          index === lastIdx ? { ...turn, isStreaming: true } : turn
+        )
+      }
+      return [...prev, { id: turnId, utterances: [], suggestion: '', isStreaming: true }]
+    })
 
     try {
       const analyzeRes = await fetch('/api/analyze', {
@@ -260,14 +274,14 @@ export function CopilotModal() {
 
       if (!analyzeRes.ok) {
         if (analyzeRes.status === 204) {
-          setTurns(prev => prev.filter(t => t.id !== turnId))
+          setTurns(prev => prev.map(t => t.id === coachingTurnId ? { ...t, isStreaming: false } : t))
           setIsProcessing(false)
           setStatus('')
           return
         }
         const err = await analyzeRes.json()
         setError(err.error || 'Analysis failed')
-        setTurns(prev => prev.map(t => t.id === turnId ? { ...t, isStreaming: false } : t))
+        setTurns(prev => prev.map(t => t.id === coachingTurnId ? { ...t, isStreaming: false } : t))
         setIsProcessing(false)
         setStatus('')
         return
@@ -285,7 +299,7 @@ export function CopilotModal() {
           const data = line.slice(6).trim()
           if (data === '[DONE]') {
             setTurns(prev => prev.map(t =>
-              t.id === turnId ? { ...t, suggestion: accumulated, isStreaming: false } : t
+              t.id === coachingTurnId ? { ...t, suggestion: accumulated, isStreaming: false } : t
             ))
             setHistory(prev => [...prev, { role: 'assistant', content: accumulated }])
             lastCoachedIndexRef.current = meetingUtterancesRef.current.length
@@ -299,12 +313,12 @@ export function CopilotModal() {
             if (parsed.replace) {
               accumulated = parsed.replace
               setTurns(prev => prev.map(t =>
-                t.id === turnId ? { ...t, suggestion: accumulated } : t
+                t.id === coachingTurnId ? { ...t, suggestion: accumulated } : t
               ))
             } else if (parsed.text) {
               accumulated += parsed.text
               setTurns(prev => prev.map(t =>
-                t.id === turnId ? { ...t, suggestion: accumulated } : t
+                t.id === coachingTurnId ? { ...t, suggestion: accumulated } : t
               ))
             }
           } catch (_) {}
@@ -315,7 +329,7 @@ export function CopilotModal() {
       setIsProcessing(false)
       setStatus('')
     }
-  }, [brief, company, history, isClientUtterance, knowledge, partialTranscript, pendingCoachingUtterances, speakerMap])
+  }, [brief, company, history, isClientUtterance, isProcessing, knowledge, partialTranscript, pendingCoachingUtterances, speakerMap])
 
   const handleEndMeeting = useCallback(async () => {
     setIsSavingLog(true)
