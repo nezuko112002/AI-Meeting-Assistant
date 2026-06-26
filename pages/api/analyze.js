@@ -338,12 +338,6 @@ Provide your coaching using these sections. Omit any section that is not needed 
 **📖 Good to know:**
   [Only include if there's genuinely useful context — a relevant fact, industry term, or background info she might not know. Skip this section if not needed.]
 
-**⚠️ Watch out:**
-  [Only include if there's a real risk or red flag in what the client said — a budget concern, a scope creep signal, a comparison to a competitor. Skip if not needed.]
-
-**✅ After this call:**
-  [Only include if an action item becomes clear from this exchange. Skip if nothing actionable yet.]
-
 A response with just "What they're asking" and "Say this" is perfectly fine.
 
 Banned in **🎯 Say this:** — never write these:

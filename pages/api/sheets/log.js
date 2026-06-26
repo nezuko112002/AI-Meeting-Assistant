@@ -2,6 +2,8 @@ import {
   getSheetsClient,
   getSheetId,
   ensureMeetingLogTab,
+  ensureMeetingLogDateTimeTextFormat,
+  formatMeetingLogDateTime,
   TAB_MEETING_LOG,
 } from '../../../lib/googleSheets'
 
@@ -38,22 +40,14 @@ export default async function handler(req, res) {
 
     const sheets = getSheetsClient()
     await ensureMeetingLogTab(sheets, sheetId)
+    await ensureMeetingLogDateTimeTextFormat(sheets, sheetId)
 
-    const now = new Date()
-    const date = now.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    })
-    const time = now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+    const { date, time } = formatMeetingLogDateTime(new Date())
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
       range: `${TAB_MEETING_LOG}!A:L`,
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       requestBody: {
         values: [[
