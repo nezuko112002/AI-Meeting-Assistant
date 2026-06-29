@@ -13,9 +13,11 @@ import {
   findRelevantProjects,
   getKnowledgeCompanyNames,
   getAllowedSheetPrices,
+  getRecommendedPriceEstimate,
   pickPortfolioProjects,
 } from '../../lib/knowledgeHelpers'
 import { buildPortfolioFirewallSection, buildProspectFactContext } from '../../lib/prospectAttribution'
+import { buildAudienceSection, normalizeAudienceLevel } from '../../lib/audienceLevel'
 import { fetchWebsiteSnippet } from '../../lib/fetchWebsiteSnippet'
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -155,6 +157,9 @@ function buildBriefSection(brief) {
     lines.push(`Prior conversations & prep notes (treat as facts the rep already knows):\n${brief.priorConversations}`)
   }
   if (brief.meetingGoal) lines.push(`Meeting goal: ${brief.meetingGoal}`)
+  if (brief.audienceLevel) {
+    lines.push(`Client audience level: ${normalizeAudienceLevel(brief.audienceLevel)}`)
+  }
 
   if (!lines.length) return ''
 
@@ -375,6 +380,7 @@ function buildAnalyzeSystemPrompt({ company, brief, knowledge = [], contextText 
     buildKnowledgeBaseSection(knowledge, brief, contextText),
     buildHowToUseCompanyKnowledgeSection(brief),
     buildMeetingTypeSection(brief),
+    buildAudienceSection(brief),
     knowledge.length ? buildPricingBasisSection(knowledge, relevantProjects, meetingContext) : '',
     knowledge.length ? buildPriceEstimateSection(knowledge, relevantProjects, contextText) : '',
     buildBriefSection(brief),
@@ -469,6 +475,7 @@ function collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptTex
     : []
   const sheetPrices = getAllowedSheetPrices(knowledge, relevant, `${contextText}\n${fullTranscriptText}`)
   const clientStatedPrices = extractClientStatedPrices(fullTranscriptText)
+  const priceEstimate = getRecommendedPriceEstimate(knowledge, relevant, `${contextText}\n${fullTranscriptText}`)
   const factContext = buildProspectFactContext(fullTranscriptText, brief)
 
   return {
@@ -487,12 +494,14 @@ function collectSanitizeOptions(knowledge, brief, contextText, fullTranscriptTex
     clientRejectedTmsReplacement: Boolean(clientIntent.clientRejectedTmsReplacement),
     documentedPrices: sheetPrices,
     clientStatedPrices,
+    priceEstimate,
     history,
     meetingContext: contextText,
     latestClientText: clientIntent.latestClientText || '',
     intent: clientIntent,
     websiteSnippet: brief?.websiteSnippet || '',
     priorConversations: brief?.priorConversations || '',
+    audienceLevel: normalizeAudienceLevel(brief?.audienceLevel),
   }
 }
 
@@ -570,9 +579,9 @@ In **Say this next:** write natural, confident, technical speech — never copy 
     res.setHeader('Connection', 'keep-alive')
 
     const stream = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages,
-      max_tokens: 420,
+      max_tokens: 800,
       temperature: 0.2,
       stream: true,
     })

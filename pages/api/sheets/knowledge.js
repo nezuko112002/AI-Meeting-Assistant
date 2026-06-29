@@ -6,31 +6,63 @@ import {
 
 const VALID_COMPANIES = ['codeupscale', 'ridgetheory']
 
+function columnIndex(headerRow, name) {
+  const idx = headerRow.indexOf(name)
+  return idx >= 0 ? idx : -1
+}
+
+function cell(row, idx) {
+  return idx >= 0 ? (row[idx] || '') : ''
+}
+
+function mapKnowledgeRow(headerRow, row, company) {
+  const cols = {
+    companyName: columnIndex(headerRow, 'Company Name'),
+    scopeOfServices: columnIndex(headerRow, 'Scope of Services'),
+    projectName: columnIndex(headerRow, 'Project Name'),
+    industry: columnIndex(headerRow, 'Industry'),
+    techStack: columnIndex(headerRow, 'Tech Stack'),
+    projectSummary: columnIndex(headerRow, 'Project Summary'),
+    link: columnIndex(headerRow, 'Link'),
+    owner: columnIndex(headerRow, 'Owner'),
+    assignedTeam: columnIndex(headerRow, 'Assigned Team'),
+    notes: columnIndex(headerRow, 'Notes'),
+    signedContractLink: columnIndex(headerRow, 'Signed Contract Link'),
+  }
+
+  return {
+    companyName: cell(row, cols.companyName),
+    scopeOfServices: cell(row, cols.scopeOfServices),
+    projectName: cell(row, cols.projectName),
+    industry: cell(row, cols.industry),
+    techStack: cell(row, cols.techStack),
+    projectSummary: cell(row, cols.projectSummary),
+    link: cell(row, cols.link),
+    workedUnderPrime: cell(row, cols.owner),
+    owner: cell(row, cols.assignedTeam),
+    notes: cell(row, cols.notes),
+    signedContractLink: cell(row, cols.signedContractLink),
+    portfolioSource: company,
+  }
+}
+
 async function loadKnowledgeForCompany(sheets, company) {
   const sheetId = getSheetId(company)
   if (!sheetId) return []
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: `${TAB_ALL_WORK}!A:I`,
+    range: `${TAB_ALL_WORK}!A:Z`,
   })
 
   const rows = response.data.values || []
+  if (rows.length < 2) return []
+
+  const headerRow = rows[0]
   return rows
     .slice(1)
     .filter(row => row[0] && String(row[0]).trim())
-    .map(row => ({
-      companyName: row[0] || '',
-      scopeOfServices: row[1] || '',
-      projectName: row[2] || '',
-      industry: row[3] || '',
-      techStack: row[4] || '',
-      projectSummary: row[5] || '',
-      link: row[6] || '',
-      workedUnderPrime: row[7] || '',
-      owner: row[8] || '',
-      portfolioSource: company,
-    }))
+    .map(row => mapKnowledgeRow(headerRow, row, company))
 }
 
 export default async function handler(req, res) {

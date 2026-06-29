@@ -3,6 +3,7 @@ import { useStreamingTranscription } from '../lib/useStreamingTranscription'
 import { TranscriptBubble, getDefaultSpeakerLabel } from './TranscriptBubble'
 import { SuggestionCard } from './SuggestionCard'
 import { MicButton } from './MicButton'
+import { AUDIENCE_LABELS } from '../lib/audienceLevel'
 import { SpeakerMapEditor } from './SpeakerMapEditor'
 
 const BRIEF_STORAGE_KEY = 'aiEarpiece_brief'
@@ -10,6 +11,7 @@ const EMPTY_BRIEF = {
   clientCompany: '',
   clientWebsite: '',
   priorConversations: '',
+  audienceLevel: 'balanced',
 }
 
 function loadBriefFromStorage() {
@@ -328,6 +330,15 @@ export function CopilotModal() {
           }
           try {
             const parsed = JSON.parse(data)
+            if (parsed.error) {
+              setError(parsed.error)
+              setTurns(prev => prev.map(t =>
+                t.id === coachingTurnId ? { ...t, isStreaming: false } : t
+              ))
+              setIsProcessing(false)
+              setStatus('')
+              return
+            }
             if (parsed.replace) {
               accumulated = parsed.replace
               setTurns(prev => prev.map(t =>
@@ -342,6 +353,17 @@ export function CopilotModal() {
           } catch (_) {}
         }
       }
+
+      setTurns(prev => prev.map(t =>
+        t.id === coachingTurnId ? { ...t, suggestion: accumulated, isStreaming: false } : t
+      ))
+      if (accumulated) {
+        setHistory(prev => [...prev, { role: 'assistant', content: accumulated }])
+        lastCoachedIndexRef.current = meetingUtterancesRef.current.length
+        setPendingCoachingUtterances([])
+      }
+      setIsProcessing(false)
+      setStatus('')
     } catch (err) {
       setError(err.message)
       setIsProcessing(false)
@@ -557,6 +579,23 @@ export function CopilotModal() {
             {companyError && (
               <p className="text-[11px] text-red-500 mt-1">Please select a company first</p>
             )}
+
+            <label className="block text-[11px] font-medium text-slate-500 mt-3 mb-1">Who is the client?</label>
+            <select
+              value={brief.audienceLevel || 'balanced'}
+              onChange={e => updateBrief('audienceLevel', e.target.value)}
+              disabled={companyLocked}
+              className={`w-full text-xs border rounded-lg px-2 py-2 outline-none focus:border-slate-400 bg-white ${
+                companyLocked ? 'opacity-50 cursor-not-allowed bg-slate-100' : 'border-slate-200'
+              }`}
+            >
+              {Object.entries(AUDIENCE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Developer = stack names and protocols. Executive = plain language and outcomes.
+            </p>
 
             <label className="block text-[11px] font-medium text-slate-500 mt-3 mb-1">Client company</label>
             <input
