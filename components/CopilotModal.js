@@ -618,12 +618,12 @@ export function CopilotModal() {
             <label className="block text-[11px] font-medium text-slate-500 mt-3 mb-1">Prior conversations &amp; prep notes</label>
             <textarea
               value={brief.priorConversations}
-              onChange={e => updateBrief('priorConversations', e.target.value.slice(0, 2000))}
+              onChange={e => updateBrief('priorConversations', e.target.value)}
               placeholder="LinkedIn DMs, email threads, past calls, rep notes — anything you already know about this client..."
               rows={4}
               className="w-full resize-none text-xs border border-slate-200 rounded-lg px-2 py-2 outline-none focus:border-slate-400 bg-white"
             />
-            <p className="text-xs text-slate-400 mt-1">{brief.priorConversations.length} / 2000</p>
+            <p className="text-xs text-slate-400 mt-1">{brief.priorConversations.length} characters</p>
           </div>
         )}
 
