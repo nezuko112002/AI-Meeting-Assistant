@@ -496,7 +496,7 @@ export function CopilotModal() {
     if (speakers.length > 0) {
       return `${speakers.length} speaker${speakers.length !== 1 ? 's' : ''} · ${turns.length} exchange${turns.length !== 1 ? 's' : ''}`
     }
-    return 'Powered by AssemblyAI + GPT-4o'
+    return 'Ready'
   }
 
   return (
